@@ -11,6 +11,32 @@ A reusable GitHub Action for deploying [PACKAGE.broker](https://package.broker) 
 - **Hybrid Approach**: Generates `wrangler.toml` at runtime (never committed to repository)
 - **Secret Management**: Idempotent secret handling (only sets if missing)
 
+## ⚠️ Important: Local Initialization Recommended
+
+**While this action works with completely empty repositories, it is strongly recommended to initialize your project locally first and commit the following files:**
+
+- **`package.json`** - Ensures consistent dependency versions across environments
+- **`package-lock.json`** - Locks dependency versions for reproducible builds
+- **`wrangler.toml`** - Contains service IDs (database_id, kv_namespace_id, etc.) for faster deployments and local development
+
+### Why Commit These Files?
+
+1. **Reproducibility**: Locked dependency versions ensure consistent builds across CI/CD and local development
+2. **Faster Deployments**: With `wrangler.toml` committed, the action can read existing resource IDs instead of discovering them every time
+3. **Local Development**: Having `wrangler.toml` allows you to run `wrangler dev` locally for testing
+4. **Version Control**: Track configuration changes and resource IDs over time
+5. **Team Collaboration**: Other developers can clone and work with the project immediately
+
+**Note**: The `wrangler.toml` should **not** contain secrets (like `ENCRYPTION_KEY`). Secrets are managed separately via Cloudflare secrets or GitHub Secrets.
+
+### Recommended Workflow
+
+1. **Initialize locally** using the CLI: `npx package-broker-cloudflare init`
+2. **Commit** `package.json`, `package-lock.json`, and `wrangler.toml` (without secrets)
+3. **Use this action** for automated deployments - it will use the committed `wrangler.toml` for faster execution
+
+This approach gives you the best of both worlds: convenience for quick setups and proper version control for production deployments.
+
 ## Usage
 
 ### Basic Example
@@ -80,12 +106,9 @@ jobs:
 
 ### Secrets
 
-- `CLOUDFLARE_API_TOKEN`: Cloudflare API token with the following permissions:
-  - Account: Workers Scripts:Edit
-  - Account: Workers KV Storage:Edit
-  - Account: Account Settings:Read
-  - Zone: Zone Settings:Read (if using custom domain)
-  - Zone: DNS:Read (if using custom domain)
+- `CLOUDFLARE_API_TOKEN`: Cloudflare API token with required permissions
+  - **See**: [Cloudflare API Token Permissions](https://package.broker/docs/deployment/cloudflare-api-token-permissions) for complete details
+  - **Quick reference**: Workers Scripts:Edit, D1:Edit, KV:Edit, R2:Edit, Queues:Edit (paid tier), Account Settings:Read (optional)
 - `ENCRYPTION_KEY`: Base64-encoded encryption key for PACKAGE.broker
 
 ### Variables
@@ -148,7 +171,7 @@ Must be exactly `free` or `paid` (case-sensitive).
 
 ### "Failed to create or find D1 database"
 
-Check that your API token has D1 Database permissions. Verify account ID is correct.
+Check that your API token has D1 Database permissions. See [Cloudflare API Token Permissions](https://package.broker/docs/deployment/cloudflare-api-token-permissions) for required permissions. Verify account ID is correct.
 
 ### "Migrations may have already been applied"
 
