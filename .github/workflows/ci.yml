@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate Action
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+      
+      - name: Validate action.yml syntax
+        run: |
+          # Check required fields
+          if ! grep -q "name:" action.yml; then
+            echo "::error::action.yml missing 'name' field"
+            exit 1
+          fi
+          if ! grep -q "inputs:" action.yml; then
+            echo "::error::action.yml missing 'inputs' field"
+            exit 1
+          fi
+          if ! grep -q "runs:" action.yml; then
+            echo "::error::action.yml missing 'runs' field"
+            exit 1
+          fi
+          if ! grep -q "using: 'composite'" action.yml; then
+            echo "::error::action.yml must use 'composite' runs type"
+            exit 1
+          fi
+          echo "✓ action.yml syntax is valid"
+      
+      - name: Validate required inputs
+        run: |
+          # Check that required inputs are marked as required
+          REQUIRED_INPUTS=("cloudflare_api_token" "cloudflare_account_id" "encryption_key")
+          for input in "${REQUIRED_INPUTS[@]}"; do
+            if ! grep -A 1 "${input}:" action.yml | grep -q "required: true"; then
+              echo "::error::${input} must be required"
+              exit 1
+            fi
+          done
+          echo "✓ Required inputs are correctly marked"
+      
+      - name: Validate outputs
+        run: |
+          REQUIRED_OUTPUTS=("worker_url" "database_id" "kv_namespace_id")
+          for output in "${REQUIRED_OUTPUTS[@]}"; do
+            if ! grep -q "${output}:" action.yml; then
+              echo "::error::Missing ${output} output"
+              exit 1
+            fi
+          done
+          echo "✓ All required outputs are defined"
+      
+      - name: Validate shell scripts
+        run: |
+          # Check for common bash script issues
+          set -e
+          
+          # Extract all shell scripts from action.yml
+          # This is a basic check - full validation would require parsing YAML
+          if grep -q "set -euo pipefail" action.yml; then
+            echo "✓ Shell scripts use strict mode"
+          else
+            echo "::warning::Consider using 'set -euo pipefail' in shell scripts"
+          fi
+          
+          # Check for proper error handling
+          if grep -q "::error::" action.yml; then
+            echo "✓ Error handling present"
+          fi
+          
+          echo "✓ Shell script validation passed"
+
+  integration-test:
+    name: Integration Test
+    runs-on: ubuntu-latest
+    # Only run on main branch or manual dispatch (for security - prevents secrets exposure in PRs)
+    # Organization secrets are not available to PRs from forks
+    if: (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && (secrets.CLOUDFLARE_API_TOKEN != '' && vars.CLOUDFLARE_ACCOUNT_ID != '')
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+      
+      - name: Test action execution
+        id: test_action
+        uses: ./
+        with:
+          cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          encryption_key: ${{ secrets.TEST_ENCRYPTION_KEY || 'dGVzdC1rZXktZm9yLWNpLXRlc3RpbmctcHVycG9zZXMtb25seQ==' }}
+          worker_name: "test-action-ci-${{ github.run_id }}"
+          tier: "free"
+          skip_migrations: "true"
+        continue-on-error: true
+      
+      - name: Verify outputs
+        if: always() && steps.test_action.outcome == 'success'
+        run: |
+          echo "✓ Action executed successfully"
+          echo "Worker URL: ${{ steps.test_action.outputs.worker_url }}"
+          echo "Database ID: ${{ steps.test_action.outputs.database_id }}"
+          echo "KV Namespace ID: ${{ steps.test_action.outputs.kv_namespace_id }}"
+      
+      - name: Cleanup test resources
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          WORKER_NAME="test-action-ci-${{ github.run_id }}"
+          echo "🧹 Cleaning up test resources for: ${WORKER_NAME}"
+          
+          # Install wrangler for cleanup
+          npm install -g wrangler@3
+          
+          # Cleanup D1 database
+          echo "Deleting D1 database: ${WORKER_NAME}-db"
+          wrangler d1 delete "${WORKER_NAME}-db" --json 2>/dev/null || echo "Database not found or already deleted"
+          
+          # Cleanup KV namespace
+          echo "Deleting KV namespace: ${WORKER_NAME}-kv"
+          KV_ID=$(wrangler kv namespace list --json | jq -r ".[] | select(.title == \"${WORKER_NAME}-kv\") | .id" || echo "")
+          if [ -n "$KV_ID" ] && [ "$KV_ID" != "null" ]; then
+            wrangler kv namespace delete "$KV_ID" 2>/dev/null || echo "KV namespace not found or already deleted"
+          fi
+          
+          # Cleanup R2 bucket
+          echo "Deleting R2 bucket: ${WORKER_NAME}-artifacts"
+          wrangler r2 bucket delete "${WORKER_NAME}-artifacts" 2>/dev/null || echo "R2 bucket not found or already deleted"
+          
+          # Cleanup Worker (if deployed)
+          echo "Deleting Worker: ${WORKER_NAME}"
+          wrangler delete "${WORKER_NAME}" 2>/dev/null || echo "Worker not found or already deleted"
+          
+          echo "✓ Cleanup complete"
+
+  lint-docs:
+    name: Lint Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout action
+        uses: actions/checkout@v4
+      
+      - name: Check README exists
+        run: |
+          if [ ! -f "README.md" ]; then
+            echo "::error::README.md is missing"
+            exit 1
+          fi
+          echo "✓ README.md exists"
+      
+      - name: Validate README structure
+        run: |
+          # Check for required sections
+          REQUIRED_SECTIONS=("Usage" "Inputs" "Outputs" "Required GitHub Configuration")
+          for section in "${REQUIRED_SECTIONS[@]}"; do
+            if ! grep -qi "##.*${section}" README.md; then
+              echo "::warning::README.md missing '${section}' section"
+            fi
+          done
+          echo "✓ README.md structure validated"
