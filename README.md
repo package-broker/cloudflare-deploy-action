@@ -1,6 +1,16 @@
-# package-broker/deploy-action
+<div align="center">
+  <img src="https://raw.githubusercontent.com/package-broker/docs/main/static/img/logo.svg" alt="PACKAGE.broker Logo" width="120" height="120">
+  
+  # package-broker/cloudflare-deploy-action
+  
+  **Reusable GitHub Action for deploying PACKAGE.broker to Cloudflare Workers**
+  
+  > Automated deployment with resource creation and configuration
+</div>
 
-A reusable GitHub Action for deploying [PACKAGE.broker](https://package.broker) to Cloudflare Workers with automated resource creation and configuration.
+**PACKAGE.broker** is a minimalistic, platform-agnostic Composer repository proxy and cache. This action automates its deployment to Cloudflare Workers.
+
+Learn more: [package.broker](https://package.broker)
 
 ## Features
 
@@ -56,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Deploy to Cloudflare Workers
-        uses: package-broker/deploy-action@v1
+        uses: package-broker/cloudflare-deploy-action@v1
         with:
           cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -69,7 +79,7 @@ jobs:
 
 ```yaml
 - name: Deploy to Cloudflare Workers
-  uses: package-broker/deploy-action@v1
+  uses: package-broker/cloudflare-deploy-action@v1
   with:
     cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -190,43 +200,22 @@ AGPL-3.0
 
 ## Development
 
-### CI/CD
-
-This action repository includes CI workflows that:
-
-- **Validate action syntax**: Ensures `action.yml` is properly formatted
-- **Validate inputs/outputs**: Checks that required inputs are marked correctly
-- **Lint documentation**: Verifies README structure
-- **Integration tests**: Tests the action with real Cloudflare resources (requires organization secrets)
-
-See [`.github/BRANCH_PROTECTION.md`](.github/BRANCH_PROTECTION.md) for branch protection setup and organization-level secrets configuration.
+This action repository includes CI workflows that validate action syntax, inputs/outputs, and documentation. Integration tests are available when organization-level secrets are configured.
 
 ### Branch Protection
 
-To ensure code quality, set up branch protection rules:
-
-1. Go to **Settings** → **Branches**
-2. Add protection rule for `main` branch
-3. Require status checks: `validate`, `lint-docs`
-4. Optionally require PR reviews
-
-See [`.github/BRANCH_PROTECTION.md`](.github/BRANCH_PROTECTION.md) for detailed instructions.
+To ensure code quality, set up branch protection rules requiring status checks (`validate`, `lint-docs`) to pass before merging.
 
 ### Organization-Level Secrets for CI
 
 To enable integration testing in CI, configure organization-level secrets:
+- `CLOUDFLARE_API_TOKEN` (test account token)
+- `TEST_ENCRYPTION_KEY` (test encryption key)
+- `CLOUDFLARE_ACCOUNT_ID` (test account ID)
 
-1. Go to **Organization Settings** → **Secrets and variables** → **Actions**
-2. Add secrets:
-   - `CLOUDFLARE_API_TOKEN` (test account token)
-   - `TEST_ENCRYPTION_KEY` (test encryption key)
-3. Add variables:
-   - `CLOUDFLARE_ACCOUNT_ID` (test account ID)
-4. Grant access to `package-broker/deploy-action` repository
-
-See [`.github/BRANCH_PROTECTION.md`](.github/BRANCH_PROTECTION.md) for complete setup instructions.
+Grant access to `package-broker/cloudflare-deploy-action` repository in organization settings.
 
 ## Support
 
 - Documentation: https://package.broker/docs
-- Issues: https://github.com/package-broker/deploy-action/issues
+- Issues: https://github.com/package-broker/cloudflare-deploy-action/issues
