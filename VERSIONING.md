@@ -11,7 +11,7 @@ We follow [Semantic Versioning](https://semver.org/) (SemVer):
 
 ## Automated Versioning
 
-Versions are calculated automatically based on commit messages when merging to `main`:
+Versions are calculated automatically using [anothrNick/github-tag-action](https://github.com/anothrNick/github-tag-action), a trusted and popular GitHub Action that parses Conventional Commits to determine version bumps.
 
 ### Commit Types
 
@@ -21,7 +21,7 @@ Versions are calculated automatically based on commit messages when merging to `
 | `fix:` | **Patch** | Bug fix |
 | `perf:` | **Patch** | Performance improvement |
 | `feat!:` or `BREAKING CHANGE:` | **Major** | Breaking change |
-| `docs:`, `style:`, `refactor:`, `test:`, `build:`, `ci:`, `chore:` | **None** | No version bump |
+| `docs:`, `style:`, `refactor:`, `test:`, `build:`, `ci:`, `chore:` | **None** | No version bump (defaults to patch if no versioned commits) |
 
 ### Breaking Changes
 
@@ -43,9 +43,9 @@ BREAKING CHANGE: The 'old_input' parameter has been removed"
 
 When you merge a PR to `main`:
 
-1. **Version Calculation**: Analyzes all commits since last tag
-2. **Version Update**: Updates `package.json` if version bump is needed
-3. **Tag Creation**: Creates and pushes Git tag (e.g., `v1.2.3`)
+1. **Version Calculation**: [anothrNick/github-tag-action](https://github.com/anothrNick/github-tag-action) analyzes all commits since last tag
+2. **Tag Creation**: Creates and pushes Git tag (e.g., `v1.2.3`)
+3. **Version Update**: Updates `package.json` with the new version
 4. **GitHub Release**: Creates a GitHub Release with changelog
 
 ### Manual Release

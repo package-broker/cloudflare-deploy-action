@@ -13,102 +13,55 @@ permissions:
   contents: write
 
 jobs:
-  calculate-version:
-    name: Calculate Next Version
+  release:
+    name: Calculate Version and Release
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.calculate.outputs.version }}
-      should-release: ${{ steps.calculate.outputs.should-release }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history needed for version calculation
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - name: Bump version and push tag
+        id: tag_version
+        uses: anothrNick/github-tag-action@1.68.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BUMP: patch
+          WITH_V: true
+          RELEASE_BRANCHES: main
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Calculate next version
-        id: calculate
+      - name: Update package.json version
+        if: steps.tag_version.outputs.new_tag != ''
         run: |
-          NEXT_VERSION=$(node scripts/calculate-version.js)
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          
-          echo "Current version: $CURRENT_VERSION"
-          echo "Calculated next version: $NEXT_VERSION"
-          
-          if [ "$NEXT_VERSION" != "$CURRENT_VERSION" ]; then
-            echo "should-release=true" >> $GITHUB_OUTPUT
-            echo "version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-            echo "✅ Version bump detected: $CURRENT_VERSION → $NEXT_VERSION"
-          else
-            echo "should-release=false" >> $GITHUB_OUTPUT
-            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "ℹ️ No version bump needed (only non-versioned commits)"
-          fi
+          NEW_VERSION="${{ steps.tag_version.outputs.new_tag }}"
+          # Remove 'v' prefix if present
+          NEW_VERSION="${NEW_VERSION#v}"
+          node -e "const fs = require('fs'); const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8')); pkg.version = '$NEW_VERSION'; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
+          echo "Updated package.json version to $NEW_VERSION"
 
-  update-version-and-release:
-    name: Update Version and Release
-    needs: calculate-version
-    if: needs.calculate-version.outputs.should-release == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Configure Git
+      - name: Commit version update
+        if: steps.tag_version.outputs.new_tag != ''
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Update version
-        run: |
-          VERSION="${{ needs.calculate-version.outputs.version }}"
-          npm version "$VERSION" --no-git-tag-version
-          echo "Updated version to $VERSION"
-
-      - name: Commit version update
-        run: |
           git add package.json
-          git commit -m "chore(release): bump version to ${{ needs.calculate-version.outputs.version }}"
+          git commit -m "chore(release): bump version to ${{ steps.tag_version.outputs.new_tag }}"
           git push origin main
 
-      - name: Create and push tag
-        run: |
-          VERSION="${{ needs.calculate-version.outputs.version }}"
-          TAG="v$VERSION"
-          git tag "$TAG"
-          git push origin "$TAG"
-          echo "✅ Created and pushed tag: $TAG"
-
       - name: Create GitHub Release
+        if: steps.tag_version.outputs.new_tag != ''
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ needs.calculate-version.outputs.version }}
-          name: v${{ needs.calculate-version.outputs.version }}
+          tag_name: ${{ steps.tag_version.outputs.new_tag }}
+          name: ${{ steps.tag_version.outputs.new_tag }}
           body: |
             ## Changes
             
             This release includes all commits since the last tag.
             
-            ### Version: ${{ needs.calculate-version.outputs.version }}
+            ### Version: ${{ steps.tag_version.outputs.new_tag }}
             
-            See the [full changelog](https://github.com/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}) for details.
+            See the [full changelog](https://github.com/${{ github.repository }}/compare/${{ steps.tag_version.outputs.previous_tag }}...${{ steps.tag_version.outputs.new_tag }}) for details.
           draft: false
           prerelease: false
