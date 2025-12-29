@@ -1,0 +1,114 @@
+name: Release on Merge
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      # Ignore AI-only documentation files
+      - '**/.cursor/**'
+      - '**/*.plan.md'
+
+permissions:
+  contents: write
+
+jobs:
+  calculate-version:
+    name: Calculate Next Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calculate.outputs.version }}
+      should-release: ${{ steps.calculate.outputs.should-release }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for version calculation
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Calculate next version
+        id: calculate
+        run: |
+          NEXT_VERSION=$(node scripts/calculate-version.js)
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          
+          echo "Current version: $CURRENT_VERSION"
+          echo "Calculated next version: $NEXT_VERSION"
+          
+          if [ "$NEXT_VERSION" != "$CURRENT_VERSION" ]; then
+            echo "should-release=true" >> $GITHUB_OUTPUT
+            echo "version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+            echo "✅ Version bump detected: $CURRENT_VERSION → $NEXT_VERSION"
+          else
+            echo "should-release=false" >> $GITHUB_OUTPUT
+            echo "version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "ℹ️ No version bump needed (only non-versioned commits)"
+          fi
+
+  update-version-and-release:
+    name: Update Version and Release
+    needs: calculate-version
+    if: needs.calculate-version.outputs.should-release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update version
+        run: |
+          VERSION="${{ needs.calculate-version.outputs.version }}"
+          npm version "$VERSION" --no-git-tag-version
+          echo "Updated version to $VERSION"
+
+      - name: Commit version update
+        run: |
+          git add package.json
+          git commit -m "chore(release): bump version to ${{ needs.calculate-version.outputs.version }}"
+          git push origin main
+
+      - name: Create and push tag
+        run: |
+          VERSION="${{ needs.calculate-version.outputs.version }}"
+          TAG="v$VERSION"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "✅ Created and pushed tag: $TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.calculate-version.outputs.version }}
+          name: v${{ needs.calculate-version.outputs.version }}
+          body: |
+            ## Changes
+            
+            This release includes all commits since the last tag.
+            
+            ### Version: ${{ needs.calculate-version.outputs.version }}
+            
+            See the [full changelog](https://github.com/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}) for details.
+          draft: false
+          prerelease: false

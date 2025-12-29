@@ -1,0 +1,15 @@
+{
+  "name": "@package-broker/cloudflare-deploy-action",
+  "version": "1.0.0",
+  "description": "Reusable GitHub Action for deploying PACKAGE.broker to Cloudflare Workers",
+  "type": "module",
+  "scripts": {
+    "calculate-version": "node scripts/calculate-version.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}
