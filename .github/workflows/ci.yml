@@ -84,12 +84,33 @@ jobs:
     runs-on: ubuntu-latest
     # Only run on main branch or manual dispatch (for security - prevents secrets exposure in PRs)
     # Organization secrets are not available to PRs from forks
-    if: (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && (secrets.CLOUDFLARE_API_TOKEN != '' && vars.CLOUDFLARE_ACCOUNT_ID != '')
+    # Note: Cannot check secrets/vars in if condition, so we check in a step instead
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout action
         uses: actions/checkout@v4
       
+      - name: Check required secrets and variables
+        id: check_secrets
+        run: |
+          MISSING=0
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "::warning::CLOUDFLARE_API_TOKEN secret not set. Skipping integration test."
+            MISSING=1
+          fi
+          if [ -z "${{ vars.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "::warning::CLOUDFLARE_ACCOUNT_ID variable not set. Skipping integration test."
+            MISSING=1
+          fi
+          if [ "$MISSING" -eq 1 ]; then
+            echo "skip_test=true" >> $GITHUB_OUTPUT
+            echo "::notice::Integration test skipped due to missing secrets/variables"
+          else
+            echo "skip_test=false" >> $GITHUB_OUTPUT
+          fi
+      
       - name: Test action execution
+        if: steps.check_secrets.outputs.skip_test == 'false'
         id: test_action
         uses: ./
         with:
@@ -102,7 +123,7 @@ jobs:
         continue-on-error: true
       
       - name: Verify outputs
-        if: always() && steps.test_action.outcome == 'success'
+        if: always() && steps.check_secrets.outputs.skip_test == 'false' && steps.test_action.outcome == 'success'
         run: |
           echo "✓ Action executed successfully"
           echo "Worker URL: ${{ steps.test_action.outputs.worker_url }}"
@@ -110,7 +131,7 @@ jobs:
           echo "KV Namespace ID: ${{ steps.test_action.outputs.kv_namespace_id }}"
       
       - name: Cleanup test resources
-        if: always()
+        if: always() && steps.check_secrets.outputs.skip_test == 'false'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
