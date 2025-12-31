@@ -33,10 +33,6 @@ inputs:
     description: 'Node.js version to use'
     required: false
     default: '20'
-  wrangler_version:
-    description: 'Wrangler version to install (3 or 4). Defaults to 4 (latest).'
-    required: false
-    default: '4'
   skip_ui_build:
     description: 'Skip UI build if pre-built assets are available'
     required: false
@@ -258,22 +254,11 @@ runs:
     - name: Install Wrangler
       shell: bash
       working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        WRANGLER_VERSION: ${{ inputs.wrangler_version }}
       run: |
         set -euo pipefail
         
-        # Install the latest version of the specified major version
-        if [ "${WRANGLER_VERSION}" = "4" ]; then
-          echo "Installing Wrangler 4 (latest)..."
-          npm install -g wrangler@4
-        elif [ "${WRANGLER_VERSION}" = "3" ]; then
-          echo "Installing Wrangler 3 (legacy)..."
-          npm install -g wrangler@3
-        else
-          echo "::error::Invalid wrangler_version: ${WRANGLER_VERSION}. Must be '3' or '4'."
-          exit 1
-        fi
+        echo "Installing Wrangler 4..."
+        npm install -g wrangler@4
         
         # Verify installation
         echo "Installed Wrangler version:"
@@ -341,10 +326,7 @@ runs:
             exit 1
           fi
           
-          # Try JSON parsing first (for backward compatibility with Wrangler 3)
-          DB_ID=$(echo "$OUTPUT" | jq -r '.database_id // .uuid // empty' 2>/dev/null || echo "")
-          
-          # If not JSON, parse text output with multiple patterns
+          # Parse text output with multiple patterns
           if [ -z "$DB_ID" ]; then
             # Pattern 1: "database_id = "abc123..." or "database_id = 'abc123...'" or "database_id = abc123..."
             # Extract UUID after "database_id" keyword

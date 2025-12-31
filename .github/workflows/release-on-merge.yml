@@ -21,6 +21,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0  # Full history needed for version calculation
+          # Use deploy key if available for bypass, otherwise use default GITHUB_TOKEN
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
 
       - name: Bump version and push tag
         id: tag_version
@@ -47,7 +49,22 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add package.json
           git commit -m "chore(release): bump version to ${{ steps.tag_version.outputs.new_tag }}"
-          git push origin main
+          
+          # Attempt push - will fail if bypass is not configured
+          if ! git push origin main 2>&1 | tee /tmp/push-output.log; then
+            PUSH_OUTPUT=$(cat /tmp/push-output.log)
+            if echo "$PUSH_OUTPUT" | grep -q "protected branch\|GH006"; then
+              echo "::error::Branch protection is blocking automated version bump."
+              echo "::error::Bypass permissions must be configured for github-actions[bot] to push version updates."
+              echo "::error::Please configure deploy key bypass in branch protection settings."
+              echo "::error::See repository settings → Branches → main → Bypass list"
+              exit 1
+            else
+              echo "::error::Push failed for unknown reason:"
+              echo "$PUSH_OUTPUT"
+              exit 1
+            fi
+          fi
 
       - name: Create GitHub Release
         if: steps.tag_version.outputs.new_tag != ''
