@@ -34,9 +34,9 @@ inputs:
     required: false
     default: '20'
   wrangler_version:
-    description: 'Wrangler version to install (3 or 4)'
+    description: 'Wrangler version to install (3 or 4). Defaults to 4 (latest).'
     required: false
-    default: '3'
+    default: '4'
   skip_ui_build:
     description: 'Skip UI build if pre-built assets are available'
     required: false
@@ -83,6 +83,14 @@ runs:
         require CLOUDFLARE_API_TOKEN
         require CLOUDFLARE_ACCOUNT_ID
         require ENCRYPTION_KEY
+
+        # Validate Cloudflare API token format
+        # Cloudflare API tokens should be alphanumeric strings, typically 40+ characters
+        if ! [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[a-zA-Z0-9_-]+$ ]] || [ ${#CLOUDFLARE_API_TOKEN} -lt 20 ]; then
+          echo "::error::Invalid CLOUDFLARE_API_TOKEN format. Token should be alphanumeric (with hyphens/underscores) and at least 20 characters long."
+          echo "::error::Make sure you're using a Cloudflare API token, not an API key. Get one at: https://dash.cloudflare.com/profile/api-tokens"
+          missing=1
+        fi
 
         # Validate tier
         if [ -n "${CLOUDFLARE_TIER:-}" ] && [ "${CLOUDFLARE_TIER}" != "free" ] && [ "${CLOUDFLARE_TIER}" != "paid" ]; then
@@ -212,10 +220,19 @@ runs:
       shell: bash
       working-directory: ${{ steps.workdir.outputs.path }}
       run: |
+        set -euo pipefail
+        
         if [ -f "package-lock.json" ]; then
+          echo "Using npm ci (lockfile exists)"
           npm ci
+        elif [ -f "package.json" ]; then
+          echo "Using npm install (package.json exists, no lockfile)"
+          # Use --package-lock-only to generate lockfile without modifying package.json
+          # This preserves the existing package.json structure
+          npm install --package-lock-only || npm install
         else
-          npm install
+          echo "::error::No package.json found. This should not happen."
+          exit 1
         fi
 
     - name: Build UI assets
@@ -244,7 +261,23 @@ runs:
       env:
         WRANGLER_VERSION: ${{ inputs.wrangler_version }}
       run: |
-        npm install -g wrangler@${WRANGLER_VERSION}
+        set -euo pipefail
+        
+        # Install the latest version of the specified major version
+        if [ "${WRANGLER_VERSION}" = "4" ]; then
+          echo "Installing Wrangler 4 (latest)..."
+          npm install -g wrangler@4
+        elif [ "${WRANGLER_VERSION}" = "3" ]; then
+          echo "Installing Wrangler 3 (legacy)..."
+          npm install -g wrangler@3
+        else
+          echo "::error::Invalid wrangler_version: ${WRANGLER_VERSION}. Must be '3' or '4'."
+          exit 1
+        fi
+        
+        # Verify installation
+        echo "Installed Wrangler version:"
+        wrangler --version
 
     - name: Verify Cloudflare authentication
       shell: bash
@@ -253,6 +286,26 @@ runs:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
       run: |
+        set -euo pipefail
+        
+        # Validate token is set and not empty
+        if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+          echo "::error::CLOUDFLARE_API_TOKEN is empty or not set"
+          exit 1
+        fi
+        
+        # Remove any leading/trailing whitespace and newlines
+        CLOUDFLARE_API_TOKEN=$(echo "${CLOUDFLARE_API_TOKEN}" | tr -d '\n\r' | xargs)
+        export CLOUDFLARE_API_TOKEN
+        
+        # Verify token format (should be alphanumeric with hyphens/underscores)
+        if ! [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+          echo "::error::Invalid CLOUDFLARE_API_TOKEN format. Token contains invalid characters."
+          echo "::error::Make sure your token doesn't have newlines, spaces, or special characters."
+          exit 1
+        fi
+        
+        echo "Verifying Cloudflare authentication..."
         wrangler whoami
 
     - name: Discover or create D1 database
@@ -264,6 +317,12 @@ runs:
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
         WORKER_NAME: ${{ steps.worker_name.outputs.name }}
       run: |
+        set -euo pipefail
+        
+        # Clean token (remove newlines/whitespace)
+        CLOUDFLARE_API_TOKEN=$(echo "${CLOUDFLARE_API_TOKEN}" | tr -d '\n\r' | xargs)
+        export CLOUDFLARE_API_TOKEN
+        
         DB_NAME="${WORKER_NAME}-db"
         
         # Try to find existing database
@@ -273,17 +332,39 @@ runs:
           echo "Database already exists: $EXISTING_ID"
           echo "database_id=$EXISTING_ID" >> $GITHUB_OUTPUT
         else
-          # Create new database
-          OUTPUT=$(wrangler d1 create "$DB_NAME" --json)
-          DB_ID=$(echo "$OUTPUT" | jq -r '.database_id // .uuid // empty' || echo "")
+          # Create new database (capture both stdout and stderr)
+          OUTPUT=$(wrangler d1 create "$DB_NAME" 2>&1)
+          EXIT_CODE=$?
           
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "::error::Failed to create D1 database. Output: $OUTPUT"
+            exit 1
+          fi
+          
+          # Try JSON parsing first (for backward compatibility with Wrangler 3)
+          DB_ID=$(echo "$OUTPUT" | jq -r '.database_id // .uuid // empty' 2>/dev/null || echo "")
+          
+          # If not JSON, parse text output with multiple patterns
           if [ -z "$DB_ID" ]; then
-            # Fallback: parse text output
-            DB_ID=$(echo "$OUTPUT" | grep -oP 'database_id\s*=\s*["\x27]?([a-f0-9-]+)["\x27]?' | grep -oP '[a-f0-9-]{32,}' | head -1 || echo "")
+            # Pattern 1: "database_id = "abc123..." or "database_id = 'abc123...'" or "database_id = abc123..."
+            # Extract UUID after "database_id" keyword
+            DB_ID=$(echo "$OUTPUT" | grep -i "database_id" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1 || echo "")
           fi
           
           if [ -z "$DB_ID" ]; then
-            echo "::error::Failed to create or find D1 database"
+            # Pattern 2: "Created database <name> with ID: <uuid>"
+            DB_ID=$(echo "$OUTPUT" | grep -oE 'Created database .* with ID: [a-f0-9-]+' | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1 || echo "")
+          fi
+          
+          if [ -z "$DB_ID" ]; then
+            # Pattern 3: Extract any UUID pattern (final fallback)
+            DB_ID=$(echo "$OUTPUT" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1 || echo "")
+          fi
+          
+          if [ -z "$DB_ID" ]; then
+            echo "::error::Failed to extract database ID from wrangler output"
+            echo "::error::Command output: $OUTPUT"
+            echo "::error::Please check that wrangler d1 create succeeded and output contains a database ID"
             exit 1
           fi
           
@@ -391,6 +472,12 @@ runs:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
       run: |
+        set -euo pipefail
+        
+        # Clean token (remove newlines/whitespace)
+        CLOUDFLARE_API_TOKEN=$(echo "${CLOUDFLARE_API_TOKEN}" | tr -d '\n\r' | xargs)
+        export CLOUDFLARE_API_TOKEN
+        
         WHOAMI_OUTPUT=$(wrangler whoami 2>&1 || echo "")
         SUBDOMAIN=$(echo "$WHOAMI_OUTPUT" | grep -oP '@([\w-]+)' | head -1 | sed 's/@//' || echo "")
         

@@ -115,7 +115,7 @@ If your `package.json` lives in a subdirectory, set `working_directory` so the a
 | `worker_name` | ❌ | Repository name | Worker name (alphanumeric, hyphens, underscores only) |
 | `tier` | ❌ | `free` | Cloudflare Workers tier: `free` or `paid` |
 | `node_version` | ❌ | `20` | Node.js version to use |
-| `wrangler_version` | ❌ | `3` | Wrangler version to install (`3` or `4`) |
+| `wrangler_version` | ❌ | `4` | Wrangler version to install (`3` or `4`). Defaults to `4` (latest). |
 | `skip_ui_build` | ❌ | `false` | Skip UI build if pre-built assets are available |
 | `skip_migrations` | ❌ | `false` | Skip migration application |
 | `domain` | ❌ | - | Custom domain (e.g., `app.example.com`). Adds route configuration. User must manually create CNAME record. |
@@ -190,6 +190,39 @@ All operations are idempotent:
 ### "Missing required CLOUDFLARE_API_TOKEN"
 
 Ensure the secret is set in GitHub Settings → Secrets and variables → Actions → Secrets.
+
+### "Invalid format for Authorization header" or "Invalid CLOUDFLARE_API_TOKEN format"
+
+This error indicates the Cloudflare API token has formatting issues:
+
+1. **Check for newlines/whitespace**: When copying the token from Cloudflare dashboard, ensure there are no leading/trailing spaces or newlines
+2. **Verify token type**: Make sure you're using a **Cloudflare API Token** (not an API Key). Get one at: https://dash.cloudflare.com/profile/api-tokens
+3. **Token format**: The token should be alphanumeric with hyphens/underscores only, typically 40+ characters
+4. **Recreate the secret**: In GitHub, delete and recreate the `CLOUDFLARE_API_TOKEN` secret, ensuring no extra characters are included
+5. **Wrangler version**: The action now defaults to Wrangler 4. If you're seeing this error with Wrangler 3, try explicitly setting `wrangler_version: '4'` in your workflow
+
+**To fix**: 
+- Go to GitHub Settings → Secrets and variables → Actions → Secrets
+- Edit `CLOUDFLARE_API_TOKEN`
+- Copy the token directly from Cloudflare (without any spaces or newlines)
+- Save the secret
+- If using an older workflow, add `wrangler_version: '4'` to your action inputs
+
+### "package.json is being updated/modified"
+
+If you have an existing `package.json` and notice it's being modified:
+
+1. **This is expected behavior** if your `package.json` is missing required dependencies (`@package-broker/main` or `@package-broker/ui`)
+2. **To prevent modifications**: Ensure your `package.json` includes the required dependencies:
+   ```json
+   {
+     "dependencies": {
+       "@package-broker/main": "latest",
+       "@package-broker/ui": "latest"
+     }
+   }
+   ```
+3. **Use package-lock.json**: Commit a `package-lock.json` file - the action will use `npm ci` which doesn't modify `package.json`
 
 ### "Invalid CLOUDFLARE_TIER"
 
