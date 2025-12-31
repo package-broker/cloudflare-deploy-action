@@ -41,7 +41,7 @@ jobs:
           # Check that required inputs are marked as required
           REQUIRED_INPUTS=("cloudflare_api_token" "cloudflare_account_id" "encryption_key")
           for input in "${REQUIRED_INPUTS[@]}"; do
-            if ! grep -A 1 "${input}:" action.yml | grep -q "required: true"; then
+            if ! grep -A 3 "${input}:" action.yml | grep -q "required: true"; then
               echo "::error::${input} must be required"
               exit 1
             fi
