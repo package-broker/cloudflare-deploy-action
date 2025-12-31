@@ -13,6 +13,14 @@ inputs:
   encryption_key:
     description: 'Base64-encoded encryption key for PACKAGE.broker'
     required: true
+  working_directory:
+    description: 'Directory containing package.json / package-lock.json / wrangler.toml (relative to repository root)'
+    required: false
+    default: '.'
+  package_broker_version:
+    description: 'Version to use for @package-broker/* when generating package.json (e.g. "latest" or "0.9.0")'
+    required: false
+    default: 'latest'
   worker_name:
     description: 'Worker name (defaults to repository name)'
     required: false
@@ -98,6 +106,46 @@ runs:
           exit 1
         fi
 
+    - name: Resolve working directory
+      id: workdir
+      shell: bash
+      env:
+        INPUT_WORKDIR: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+
+        WORKDIR="${INPUT_WORKDIR:-.}"
+        if [ -z "$WORKDIR" ]; then
+          WORKDIR="."
+        fi
+
+        if [ ! -d "$WORKDIR" ]; then
+          echo "::error::working_directory '${WORKDIR}' does not exist in the repository workspace."
+          echo "::error::Set 'working_directory' to the folder that contains your package.json."
+          exit 1
+        fi
+
+        echo "path=${WORKDIR}" >> "$GITHUB_OUTPUT"
+        echo "Using working directory: ${WORKDIR}"
+
+    - name: Detect npm cache dependency path
+      id: cache_dep
+      shell: bash
+      env:
+        WORKDIR: ${{ steps.workdir.outputs.path }}
+      run: |
+        set -euo pipefail
+
+        LOCK_PATH="${WORKDIR%/}/package-lock.json"
+        if [ -f "$LOCK_PATH" ]; then
+          echo "path=${LOCK_PATH}" >> "$GITHUB_OUTPUT"
+          echo "cache=npm" >> "$GITHUB_OUTPUT"
+        else
+          # Empty string means setup-node will fall back to auto-detecting lockfiles (or skip caching).
+          echo "path=" >> "$GITHUB_OUTPUT"
+          echo "cache=" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Determine worker name
       id: worker_name
       shell: bash
@@ -117,12 +165,21 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node_version }}
-        cache: 'npm'
+        cache: ${{ steps.cache_dep.outputs.cache }}
+        cache-dependency-path: ${{ steps.cache_dep.outputs.path }}
 
     - name: Check for package.json
       id: package_json
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       run: |
+        # Fail fast on inconsistent states: lockfile without package.json.
+        if [ -f "package-lock.json" ] && [ ! -f "package.json" ]; then
+          echo "::error::Found package-lock.json but no package.json in '${{ steps.workdir.outputs.path }}'."
+          echo "::error::Commit both files (recommended) or remove the lockfile."
+          exit 1
+        fi
+
         if [ -f "package.json" ]; then
           echo "exists=true" >> $GITHUB_OUTPUT
           echo "package.json found"
@@ -134,6 +191,9 @@ runs:
     - name: Create package.json if missing
       if: steps.package_json.outputs.exists == 'false'
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
+      env:
+        PACKAGE_BROKER_VERSION: ${{ inputs.package_broker_version }}
       run: |
         cat > package.json <<EOF
         {
@@ -141,11 +201,8 @@ runs:
           "version": "1.0.0",
           "type": "module",
           "dependencies": {
-            "@package-broker/main": "^0.2.12",
-            "@package-broker/ui": "^0.2.12"
-          },
-          "devDependencies": {
-            "wrangler": "^3.78.0"
+            "@package-broker/main": "${PACKAGE_BROKER_VERSION}",
+            "@package-broker/ui": "${PACKAGE_BROKER_VERSION}"
           }
         }
         EOF
@@ -153,6 +210,7 @@ runs:
 
     - name: Install dependencies
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       run: |
         if [ -f "package-lock.json" ]; then
           npm ci
@@ -163,6 +221,7 @@ runs:
     - name: Build UI assets
       if: inputs.skip_ui_build != 'true'
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       run: |
         UI_PATH="node_modules/@package-broker/ui"
         if [ -d "$UI_PATH" ]; then
@@ -181,6 +240,7 @@ runs:
 
     - name: Install Wrangler
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         WRANGLER_VERSION: ${{ inputs.wrangler_version }}
       run: |
@@ -188,6 +248,7 @@ runs:
 
     - name: Verify Cloudflare authentication
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -197,6 +258,7 @@ runs:
     - name: Discover or create D1 database
       id: d1_db
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -232,6 +294,7 @@ runs:
     - name: Discover or create KV namespace
       id: kv_namespace
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -261,6 +324,7 @@ runs:
 
     - name: Discover or create R2 bucket
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -278,6 +342,7 @@ runs:
     - name: Discover or create Queue (paid tier only)
       if: inputs.tier == 'paid'
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -294,6 +359,7 @@ runs:
 
     - name: Prepare migrations
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       run: |
         mkdir -p migrations
         cp -r node_modules/@package-broker/main/migrations/*.sql migrations/ || true
@@ -303,6 +369,7 @@ runs:
       id: domain_info
       if: inputs.domain != ''
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         DOMAIN: ${{ inputs.domain }}
       run: |
@@ -319,6 +386,7 @@ runs:
     - name: Get account subdomain
       id: account_subdomain
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -340,6 +408,7 @@ runs:
 
     - name: Generate wrangler.toml
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         DATABASE_ID: ${{ steps.d1_db.outputs.database_id }}
         KV_ID: ${{ steps.kv_namespace.outputs.namespace_id }}
@@ -405,6 +474,7 @@ runs:
 
     - name: Set Cloudflare secrets (idempotent)
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -433,6 +503,7 @@ runs:
     - name: Apply database migrations
       if: inputs.skip_migrations != 'true'
       shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
       env:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
@@ -446,6 +517,7 @@ runs:
       with:
         apiToken: ${{ inputs.cloudflare_api_token }}
         accountId: ${{ inputs.cloudflare_account_id }}
+        workingDirectory: ${{ steps.workdir.outputs.path }}
 
     - name: Extract Worker URL
       id: worker_url
