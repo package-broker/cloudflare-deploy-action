@@ -84,7 +84,7 @@ jobs:
     runs-on: ubuntu-latest
     # Only run on main branch or manual dispatch (for security - prevents secrets exposure in PRs)
     # Organization secrets are not available to PRs from forks
-    if: (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && (secrets.CLOUDFLARE_API_TOKEN != '' && vars.CLOUDFLARE_ACCOUNT_ID != '')
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout action
         uses: actions/checkout@v4
