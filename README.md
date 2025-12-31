@@ -89,6 +89,20 @@ jobs:
     domain: ${{ vars.CUSTOM_DOMAIN }}  # e.g., app.example.com
 ```
 
+### Monorepo / Subdirectory Project
+
+If your `package.json` lives in a subdirectory, set `working_directory` so the action does not generate a new `package.json` at the repository root:
+
+```yaml
+- name: Deploy to Cloudflare Workers
+  uses: package-broker/cloudflare-deploy-action@v1
+  with:
+    cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    encryption_key: ${{ secrets.ENCRYPTION_KEY }}
+    working_directory: ./deploy
+```
+
 ## Inputs
 
 | Input | Required | Default | Description |
@@ -96,6 +110,8 @@ jobs:
 | `cloudflare_api_token` | ✅ | - | Cloudflare API token with Workers, D1, KV, R2, and Queues permissions |
 | `cloudflare_account_id` | ✅ | - | Cloudflare account ID |
 | `encryption_key` | ✅ | - | Base64-encoded encryption key for PACKAGE.broker |
+| `working_directory` | ❌ | `.` | Directory containing `package.json` / `package-lock.json` / `wrangler.toml` (relative to repository root) |
+| `package_broker_version` | ❌ | `latest` | Version to use for `@package-broker/*` when generating `package.json` (only used if `package.json` is missing) |
 | `worker_name` | ❌ | Repository name | Worker name (alphanumeric, hyphens, underscores only) |
 | `tier` | ❌ | `free` | Cloudflare Workers tier: `free` or `paid` |
 | `node_version` | ❌ | `20` | Node.js version to use |
