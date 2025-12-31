@@ -14,38 +14,38 @@ Learn more: [package.broker](https://package.broker)
 
 ## Features
 
-- **Zero Setup**: Works with completely empty repositories (creates `package.json` if missing)
+- **Thin Wrapper**: Delegates all deployment logic to `@package-broker/cloudflare` CLI (single source of truth)
 - **Automated Resource Management**: Discovers or creates D1 databases, KV namespaces, R2 buckets, and Queues
 - **Idempotent Operations**: Safe to run multiple times, handles existing resources gracefully
 - **Custom Domain Support**: Configure custom domains with CNAME setup instructions
 - **Hybrid Approach**: Generates `wrangler.toml` at runtime (never committed to repository)
 - **Secret Management**: Idempotent secret handling (only sets if missing)
 
-## ⚠️ Important: Local Initialization Recommended
+## ⚠️ Prerequisites: Repository Must Be Initialized
 
-**While this action works with completely empty repositories, it is strongly recommended to initialize your project locally first and commit the following files:**
+**This action requires your repository to be initialized with committed dependency files:**
 
-- **`package.json`** - Ensures consistent dependency versions across environments
-- **`package-lock.json`** - Locks dependency versions for reproducible builds
-- **`wrangler.toml`** - Contains service IDs (database_id, kv_namespace_id, etc.) for faster deployments and local development
+- **`package.json`** - Must include `@package-broker/cloudflare` as a dependency
+- **`package-lock.json`** - **REQUIRED** - The action uses `npm ci` for reproducible installs
 
-### Why Commit These Files?
+### Why These Prerequisites?
 
-1. **Reproducibility**: Locked dependency versions ensure consistent builds across CI/CD and local development
-2. **Faster Deployments**: With `wrangler.toml` committed, the action can read existing resource IDs instead of discovering them every time
-3. **Local Development**: Having `wrangler.toml` allows you to run `wrangler dev` locally for testing
-4. **Version Control**: Track configuration changes and resource IDs over time
-5. **Team Collaboration**: Other developers can clone and work with the project immediately
+1. **Reproducibility**: `package-lock.json` ensures `npm ci` installs exact dependency versions (including `@package-broker/cloudflare` and its pinned `wrangler` version)
+2. **DRY Principle**: All deployment logic lives in `@package-broker/cloudflare` - this action is just a thin wrapper
+3. **Version Control**: Track dependency versions and ensure CI matches local development
+4. **Team Collaboration**: Other developers can clone and work with the project immediately
 
-**Note**: The `wrangler.toml` should **not** contain secrets (like `ENCRYPTION_KEY`). Secrets are managed separately via Cloudflare secrets or GitHub Secrets.
+**Note**: The `wrangler.toml` is generated at runtime and should **not** be committed. It does not contain secrets (like `ENCRYPTION_KEY`), which are managed separately via Cloudflare secrets or GitHub Secrets.
 
 ### Recommended Workflow
 
-1. **Initialize locally** using the CLI: `npx package-broker-cloudflare init`
-2. **Commit** `package.json`, `package-lock.json`, and `wrangler.toml` (without secrets)
-3. **Use this action** for automated deployments - it will use the committed `wrangler.toml` for faster execution
-
-This approach gives you the best of both worlds: convenience for quick setups and proper version control for production deployments.
+1. **Initialize locally**:
+   ```bash
+   npm install @package-broker/cloudflare @package-broker/main @package-broker/ui
+   # This creates package.json and package-lock.json
+   ```
+2. **Commit** `package.json` and `package-lock.json`
+3. **Use this action** for automated deployments - it will call `@package-broker/cloudflare` CLI in CI mode
 
 ## Usage
 
@@ -110,8 +110,7 @@ If your `package.json` lives in a subdirectory, set `working_directory` so the a
 | `cloudflare_api_token` | ✅ | - | Cloudflare API token with Workers, D1, KV, R2, and Queues permissions |
 | `cloudflare_account_id` | ✅ | - | Cloudflare account ID |
 | `encryption_key` | ✅ | - | Base64-encoded encryption key for PACKAGE.broker |
-| `working_directory` | ❌ | `.` | Directory containing `package.json` / `package-lock.json` / `wrangler.toml` (relative to repository root) |
-| `package_broker_version` | ❌ | `latest` | Version to use for `@package-broker/*` when generating `package.json` (only used if `package.json` is missing) |
+| `working_directory` | ❌ | `.` | Directory containing `package.json` / `package-lock.json` (relative to repository root) |
 | `worker_name` | ❌ | Repository name | Worker name (alphanumeric, hyphens, underscores only) |
 | `tier` | ❌ | `free` | Cloudflare Workers tier: `free` or `paid` |
 | `node_version` | ❌ | `20` | Node.js version to use |
@@ -145,20 +144,17 @@ If your `package.json` lives in a subdirectory, set `working_directory` so the a
 
 ## How It Works
 
-1. **Validation**: Validates all required inputs and configuration
-2. **Package Management**: Creates `package.json` if missing, installs dependencies
-3. **UI Build**: Builds UI assets if not already built
-4. **Resource Discovery**: Discovers existing Cloudflare resources by name pattern:
-   - D1 Database: `${worker_name}-db`
-   - KV Namespace: `${worker_name}-kv`
-   - R2 Bucket: `${worker_name}-artifacts`
-   - Queue: `${worker_name}-queue` (paid tier only)
-5. **Resource Creation**: Creates missing resources if not found
-6. **Configuration**: Generates `wrangler.toml` at runtime with discovered/created resource IDs
-7. **Secret Management**: Sets `ENCRYPTION_KEY` as Cloudflare secret (idempotent - only if missing)
-8. **Migrations**: Applies database migrations to D1 database
-9. **Deployment**: Deploys Worker to Cloudflare
-10. **Post-Deployment**: Displays Worker URL and custom domain setup instructions (if applicable)
+This action is a **thin wrapper** around `@package-broker/cloudflare` CLI:
+
+1. **Validation**: Validates required inputs (API token, account ID, encryption key)
+2. **Working Directory**: Resolves the directory containing your `package.json` / `package-lock.json`
+3. **Dependency Check**: **Requires** `package-lock.json` to exist (fails fast if missing)
+4. **Install Dependencies**: Runs `npm ci` to install exact versions from lockfile
+5. **Deploy via CLI**: Calls `package-broker-cloudflare deploy --ci --json` with all configuration
+6. **Parse Output**: Extracts `worker_url`, `database_id`, `kv_namespace_id` from JSON output
+7. **Set Outputs**: Makes deployment results available to subsequent workflow steps
+
+All deployment logic (resource discovery/creation, `wrangler.toml` generation, migrations, deployment) is handled by `@package-broker/cloudflare`, ensuring a single source of truth.
 
 ## Custom Domain Setup
 
@@ -205,21 +201,29 @@ This error indicates the Cloudflare API token has formatting issues:
 - Copy the token directly from Cloudflare (without any spaces or newlines)
 - Save the secret
 
+### "package-lock.json is required but not found"
+
+This action **requires** `package-lock.json` to exist. To fix:
+
+1. **Initialize your repository locally**:
+   ```bash
+   npm install @package-broker/cloudflare @package-broker/main @package-broker/ui
+   ```
+2. **Commit both files**:
+   ```bash
+   git add package.json package-lock.json
+   git commit -m "chore: add package-broker dependencies"
+   ```
+
+The action uses `npm ci` which requires a lockfile for reproducible installs.
+
 ### "package.json is being updated/modified"
 
-If you have an existing `package.json` and notice it's being modified:
+This action **does not modify** `package.json`. If you see changes:
 
-1. **This is expected behavior** if your `package.json` is missing required dependencies (`@package-broker/main` or `@package-broker/ui`)
-2. **To prevent modifications**: Ensure your `package.json` includes the required dependencies:
-   ```json
-   {
-     "dependencies": {
-       "@package-broker/main": "latest",
-       "@package-broker/ui": "latest"
-     }
-   }
-   ```
-3. **Use package-lock.json**: Commit a `package-lock.json` file - the action will use `npm ci` which doesn't modify `package.json`
+1. Check other workflow steps that might be editing it
+2. Check for `postinstall` scripts in dependencies that modify package.json
+3. Ensure your `package.json` includes `@package-broker/cloudflare` as a dependency
 
 ### "Invalid CLOUDFLARE_TIER"
 

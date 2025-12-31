@@ -17,10 +17,6 @@ inputs:
     description: 'Directory containing package.json / package-lock.json / wrangler.toml (relative to repository root)'
     required: false
     default: '.'
-  package_broker_version:
-    description: 'Version to use for @package-broker/* when generating package.json (e.g. "latest" or "0.9.0")'
-    required: false
-    default: 'latest'
   worker_name:
     description: 'Worker name (defaults to repository name)'
     required: false
@@ -61,9 +57,6 @@ runs:
         CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
         ENCRYPTION_KEY: ${{ inputs.encryption_key }}
-        WORKER_NAME: ${{ inputs.worker_name }}
-        CLOUDFLARE_TIER: ${{ inputs.tier }}
-        DOMAIN: ${{ inputs.domain }}
       run: |
         set -euo pipefail
 
@@ -79,32 +72,6 @@ runs:
         require CLOUDFLARE_API_TOKEN
         require CLOUDFLARE_ACCOUNT_ID
         require ENCRYPTION_KEY
-
-        # Validate Cloudflare API token format
-        # Cloudflare API tokens should be alphanumeric strings, typically 40+ characters
-        if ! [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[a-zA-Z0-9_-]+$ ]] || [ ${#CLOUDFLARE_API_TOKEN} -lt 20 ]; then
-          echo "::error::Invalid CLOUDFLARE_API_TOKEN format. Token should be alphanumeric (with hyphens/underscores) and at least 20 characters long."
-          echo "::error::Make sure you're using a Cloudflare API token, not an API key. Get one at: https://dash.cloudflare.com/profile/api-tokens"
-          missing=1
-        fi
-
-        # Validate tier
-        if [ -n "${CLOUDFLARE_TIER:-}" ] && [ "${CLOUDFLARE_TIER}" != "free" ] && [ "${CLOUDFLARE_TIER}" != "paid" ]; then
-          echo "::error::Invalid CLOUDFLARE_TIER='${CLOUDFLARE_TIER}'. Must be 'free' or 'paid'."
-          missing=1
-        fi
-
-        # Validate worker name if provided
-        if [ -n "${WORKER_NAME:-}" ] && ! [[ "${WORKER_NAME}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-          echo "::error::Invalid WORKER_NAME='${WORKER_NAME}'. Use only letters, digits, '_' or '-'."
-          missing=1
-        fi
-
-        # Validate domain format if provided
-        if [ -n "${DOMAIN:-}" ] && ! [[ "${DOMAIN}" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]$ ]]; then
-          echo "::error::Invalid domain format: '${DOMAIN}'. Use format like 'app.example.com'."
-          missing=1
-        fi
 
         if [ "${missing}" -ne 0 ]; then
           exit 1
@@ -132,23 +99,41 @@ runs:
         echo "path=${WORKDIR}" >> "$GITHUB_OUTPUT"
         echo "Using working directory: ${WORKDIR}"
 
-    - name: Detect npm cache dependency path
-      id: cache_dep
+    - name: Require package-lock.json
       shell: bash
-      env:
-        WORKDIR: ${{ steps.workdir.outputs.path }}
+      working-directory: ${{ steps.workdir.outputs.path }}
       run: |
         set -euo pipefail
 
-        LOCK_PATH="${WORKDIR%/}/package-lock.json"
-        if [ -f "$LOCK_PATH" ]; then
-          echo "path=${LOCK_PATH}" >> "$GITHUB_OUTPUT"
-          echo "cache=npm" >> "$GITHUB_OUTPUT"
-        else
-          # Empty string means setup-node will fall back to auto-detecting lockfiles (or skip caching).
-          echo "path=" >> "$GITHUB_OUTPUT"
-          echo "cache=" >> "$GITHUB_OUTPUT"
+        if [ ! -f "package-lock.json" ]; then
+          echo "::error::package-lock.json is required but not found in '${{ steps.workdir.outputs.path }}'."
+          echo "::error::This action requires an initialized repository with committed package.json and package-lock.json."
+          echo "::error::Run 'npm install' locally and commit both files before using this action."
+          exit 1
         fi
+
+        if [ ! -f "package.json" ]; then
+          echo "::error::package.json is required but not found in '${{ steps.workdir.outputs.path }}'."
+          echo "::error::Commit package.json and package-lock.json before using this action."
+          exit 1
+        fi
+
+        echo "✓ Found package.json and package-lock.json"
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node_version }}
+        cache: 'npm'
+        cache-dependency-path: ${{ steps.workdir.outputs.path }}/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ steps.workdir.outputs.path }}
+      run: |
+        set -euo pipefail
+        echo "Installing dependencies with npm ci..."
+        npm ci
 
     - name: Determine worker name
       id: worker_name
@@ -165,383 +150,8 @@ runs:
         echo "name=${WORKER_NAME}" >> $GITHUB_OUTPUT
         echo "Using worker name: ${WORKER_NAME}"
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ inputs.node_version }}
-        cache: ${{ steps.cache_dep.outputs.cache }}
-        cache-dependency-path: ${{ steps.cache_dep.outputs.path }}
-
-    - name: Check for package.json
-      id: package_json
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      run: |
-        # Fail fast on inconsistent states: lockfile without package.json.
-        if [ -f "package-lock.json" ] && [ ! -f "package.json" ]; then
-          echo "::error::Found package-lock.json but no package.json in '${{ steps.workdir.outputs.path }}'."
-          echo "::error::Commit both files (recommended) or remove the lockfile."
-          exit 1
-        fi
-
-        if [ -f "package.json" ]; then
-          echo "exists=true" >> $GITHUB_OUTPUT
-          echo "package.json found"
-        else
-          echo "exists=false" >> $GITHUB_OUTPUT
-          echo "package.json not found, will create one"
-        fi
-
-    - name: Create package.json if missing
-      if: steps.package_json.outputs.exists == 'false'
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        PACKAGE_BROKER_VERSION: ${{ inputs.package_broker_version }}
-      run: |
-        cat > package.json <<EOF
-        {
-          "name": "package-broker-deployment",
-          "version": "1.0.0",
-          "type": "module",
-          "dependencies": {
-            "@package-broker/main": "${PACKAGE_BROKER_VERSION}",
-            "@package-broker/ui": "${PACKAGE_BROKER_VERSION}"
-          }
-        }
-        EOF
-        echo "Created minimal package.json"
-
-    - name: Install dependencies
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      run: |
-        set -euo pipefail
-        
-        if [ -f "package-lock.json" ]; then
-          echo "Using npm ci (lockfile exists)"
-          npm ci
-        elif [ -f "package.json" ]; then
-          echo "Using npm install (package.json exists, no lockfile)"
-          # Use --package-lock-only to generate lockfile without modifying package.json
-          # This preserves the existing package.json structure
-          npm install --package-lock-only || npm install
-        else
-          echo "::error::No package.json found. This should not happen."
-          exit 1
-        fi
-
-    - name: Build UI assets
-      if: inputs.skip_ui_build != 'true'
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      run: |
-        UI_PATH="node_modules/@package-broker/ui"
-        if [ -d "$UI_PATH" ]; then
-          if [ ! -d "$UI_PATH/dist" ]; then
-            echo "Building UI assets..."
-            cd "$UI_PATH"
-            npm install --no-save
-            npm run build || echo "UI build failed, but continuing..."
-            cd -
-          else
-            echo "UI assets already built"
-          fi
-        else
-          echo "::warning::@package-broker/ui not found. UI will not be available."
-        fi
-
-    - name: Install Wrangler
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      run: |
-        set -euo pipefail
-        
-        echo "Installing Wrangler 4..."
-        npm install -g wrangler@4
-        
-        # Verify installation
-        echo "Installed Wrangler version:"
-        wrangler --version
-
-    - name: Verify Cloudflare authentication
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-      run: |
-        set -euo pipefail
-        
-        # Validate token is set and not empty
-        if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-          echo "::error::CLOUDFLARE_API_TOKEN is empty or not set"
-          exit 1
-        fi
-        
-        # Remove any leading/trailing whitespace and newlines
-        CLOUDFLARE_API_TOKEN=$(echo "${CLOUDFLARE_API_TOKEN}" | tr -d '\n\r' | xargs)
-        export CLOUDFLARE_API_TOKEN
-        
-        # Verify token format (should be alphanumeric with hyphens/underscores)
-        if ! [[ "${CLOUDFLARE_API_TOKEN}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-          echo "::error::Invalid CLOUDFLARE_API_TOKEN format. Token contains invalid characters."
-          echo "::error::Make sure your token doesn't have newlines, spaces, or special characters."
-          exit 1
-        fi
-        
-        echo "Verifying Cloudflare authentication..."
-        wrangler whoami
-
-    - name: Discover or create D1 database
-      id: d1_db
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-      run: |
-        set -euo pipefail
-        
-        # Clean token (remove newlines/whitespace)
-        CLOUDFLARE_API_TOKEN=$(echo "${CLOUDFLARE_API_TOKEN}" | tr -d '\n\r' | xargs)
-        export CLOUDFLARE_API_TOKEN
-        
-        DB_NAME="${WORKER_NAME}-db"
-        
-        # Try to find existing database
-        EXISTING_ID=$(wrangler d1 list --json | jq -r ".[] | select(.name == \"$DB_NAME\") | .uuid" || echo "")
-        
-        if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
-          echo "Database already exists: $EXISTING_ID"
-          echo "database_id=$EXISTING_ID" >> $GITHUB_OUTPUT
-        else
-          # Create new database (capture both stdout and stderr)
-          OUTPUT=$(wrangler d1 create "$DB_NAME" 2>&1)
-          EXIT_CODE=$?
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "::error::Failed to create D1 database. Output: $OUTPUT"
-            exit 1
-          fi
-          
-          # Parse text output with multiple patterns
-          if [ -z "$DB_ID" ]; then
-            # Pattern 1: "database_id = "abc123..." or "database_id = 'abc123...'" or "database_id = abc123..."
-            # Extract UUID after "database_id" keyword
-            DB_ID=$(echo "$OUTPUT" | grep -i "database_id" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1 || echo "")
-          fi
-          
-          if [ -z "$DB_ID" ]; then
-            # Pattern 2: "Created database <name> with ID: <uuid>"
-            DB_ID=$(echo "$OUTPUT" | grep -oE 'Created database .* with ID: [a-f0-9-]+' | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1 || echo "")
-          fi
-          
-          if [ -z "$DB_ID" ]; then
-            # Pattern 3: Extract any UUID pattern (final fallback)
-            DB_ID=$(echo "$OUTPUT" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1 || echo "")
-          fi
-          
-          if [ -z "$DB_ID" ]; then
-            echo "::error::Failed to extract database ID from wrangler output"
-            echo "::error::Command output: $OUTPUT"
-            echo "::error::Please check that wrangler d1 create succeeded and output contains a database ID"
-            exit 1
-          fi
-          
-          echo "Created database: $DB_ID"
-          echo "database_id=$DB_ID" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Discover or create KV namespace
-      id: kv_namespace
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-      run: |
-        KV_TITLE="${WORKER_NAME}-kv"
-        
-        # Try to find existing namespace
-        EXISTING_ID=$(wrangler kv namespace list --json | jq -r ".[] | select(.title == \"$KV_TITLE\") | .id" || echo "")
-        
-        if [ -n "$EXISTING_ID" ] && [ "$EXISTING_ID" != "null" ]; then
-          echo "KV namespace already exists: $EXISTING_ID"
-          echo "namespace_id=$EXISTING_ID" >> $GITHUB_OUTPUT
-        else
-          # Create new namespace
-          OUTPUT=$(wrangler kv namespace create "$KV_TITLE")
-          NS_ID=$(echo "$OUTPUT" | grep -oP 'id\s*=\s*["\x27]?([a-f0-9]{32})["\x27]?' | grep -oP '[a-f0-9]{32}' | head -1 || echo "")
-          
-          if [ -z "$NS_ID" ]; then
-            echo "::error::Failed to create or find KV namespace"
-            exit 1
-          fi
-          
-          echo "Created KV namespace: $NS_ID"
-          echo "namespace_id=$NS_ID" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Discover or create R2 bucket
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-      run: |
-        BUCKET_NAME="${WORKER_NAME}-artifacts"
-        
-        # Check if bucket exists
-        if wrangler r2 bucket list --json | jq -e ".[] | select(.name == \"$BUCKET_NAME\")" > /dev/null 2>&1; then
-          echo "R2 bucket already exists"
-        else
-          wrangler r2 bucket create "$BUCKET_NAME" || echo "Bucket may already exist"
-        fi
-
-    - name: Discover or create Queue (paid tier only)
-      if: inputs.tier == 'paid'
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-      run: |
-        QUEUE_NAME="${WORKER_NAME}-queue"
-        
-        # Check if queue exists
-        if wrangler queues list --json | jq -e ".[] | select(.name == \"$QUEUE_NAME\")" > /dev/null 2>&1; then
-          echo "Queue already exists"
-        else
-          wrangler queues create "$QUEUE_NAME" || echo "Queue may already exist"
-        fi
-
-    - name: Prepare migrations
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      run: |
-        mkdir -p migrations
-        cp -r node_modules/@package-broker/main/migrations/*.sql migrations/ || true
-        echo "Migrations prepared"
-
-    - name: Extract zone from domain
-      id: domain_info
-      if: inputs.domain != ''
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        DOMAIN: ${{ inputs.domain }}
-      run: |
-        # Extract zone name (last two parts: example.com from app.example.com)
-        ZONE_NAME=$(echo "$DOMAIN" | awk -F'.' '{print $(NF-1)"."$NF}')
-        
-        # Extract subdomain (everything before the zone)
-        SUBDOMAIN=$(echo "$DOMAIN" | sed "s/\.${ZONE_NAME}$//")
-        
-        echo "zone_name=${ZONE_NAME}" >> $GITHUB_OUTPUT
-        echo "subdomain=${SUBDOMAIN}" >> $GITHUB_OUTPUT
-        echo "Zone: ${ZONE_NAME}, Subdomain: ${SUBDOMAIN}"
-
-    - name: Get account subdomain
-      id: account_subdomain
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-      run: |
-        set -euo pipefail
-        
-        # Clean token (remove newlines/whitespace)
-        CLOUDFLARE_API_TOKEN=$(echo "${CLOUDFLARE_API_TOKEN}" | tr -d '\n\r' | xargs)
-        export CLOUDFLARE_API_TOKEN
-        
-        WHOAMI_OUTPUT=$(wrangler whoami 2>&1 || echo "")
-        SUBDOMAIN=$(echo "$WHOAMI_OUTPUT" | grep -oP '@([\w-]+)' | head -1 | sed 's/@//' || echo "")
-        
-        if [ -z "$SUBDOMAIN" ]; then
-          # Fallback: try to extract from any email-like pattern
-          SUBDOMAIN=$(echo "$WHOAMI_OUTPUT" | grep -oP '[\w-]+@[\w-]+' | head -1 | cut -d'@' -f2 || echo "")
-        fi
-        
-        if [ -z "$SUBDOMAIN" ]; then
-          SUBDOMAIN="workers"
-        fi
-        
-        echo "subdomain=${SUBDOMAIN}" >> $GITHUB_OUTPUT
-        echo "Account subdomain: ${SUBDOMAIN}"
-
-    - name: Generate wrangler.toml
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        DATABASE_ID: ${{ steps.d1_db.outputs.database_id }}
-        KV_ID: ${{ steps.kv_namespace.outputs.namespace_id }}
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-        PAID_TIER: ${{ inputs.tier == 'paid' && 'true' || 'false' }}
-        DOMAIN: ${{ inputs.domain }}
-        ZONE_NAME: ${{ steps.domain_info.outputs.zone_name }}
-      run: |
-        cat > wrangler.toml <<EOF
-        name = "${WORKER_NAME}"
-        main = "node_modules/@package-broker/main/dist/index.js"
-        compatibility_date = "2024-09-23"
-        compatibility_flags = ["nodejs_compat"]
-
-        # ENCRYPTION_KEY is set as Cloudflare secret, not in this file
-        # Set it via: wrangler secret put ENCRYPTION_KEY
-        # Or via Cloudflare dashboard: Workers & Pages → Settings → Variables and Secrets
-
-        # Static Assets (UI)
-        [assets]
-        directory = "node_modules/@package-broker/ui/dist"
-        binding = "ASSETS"
-
-        [[d1_databases]]
-        binding = "DB"
-        database_name = "${WORKER_NAME}-db"
-        database_id = "${DATABASE_ID}"
-
-        [[kv_namespaces]]
-        binding = "KV"
-        id = "${KV_ID}"
-
-        [[r2_buckets]]
-        binding = "R2_BUCKET"
-        bucket_name = "${WORKER_NAME}-artifacts"
-        EOF
-
-        if [ "$PAID_TIER" = "true" ]; then
-          cat >> wrangler.toml <<EOF
-
-        # Queue configuration (paid tier)
-        [[queues.producers]]
-        binding = "QUEUE"
-        queue = "${WORKER_NAME}-queue"
-
-        [[queues.consumers]]
-        queue = "${WORKER_NAME}-queue"
-        max_batch_size = 10
-        max_batch_timeout = 30
-        EOF
-        fi
-
-        # Add custom domain routes if provided
-        if [ -n "${DOMAIN:-}" ] && [ -n "${ZONE_NAME:-}" ]; then
-          cat >> wrangler.toml <<EOF
-
-        # Custom domain route
-        routes = [
-          { pattern = "${DOMAIN}/*", zone_name = "${ZONE_NAME}" }
-        ]
-        EOF
-        fi
-
-    - name: Set Cloudflare secrets (idempotent)
+    - name: Deploy via CLI
+      id: deploy
       shell: bash
       working-directory: ${{ steps.workdir.outputs.path }}
       env:
@@ -549,103 +159,85 @@ runs:
         CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
         ENCRYPTION_KEY: ${{ inputs.encryption_key }}
         WORKER_NAME: ${{ steps.worker_name.outputs.name }}
+        CLOUDFLARE_TIER: ${{ inputs.tier }}
+        DOMAIN: ${{ inputs.domain }}
+        SKIP_UI_BUILD: ${{ inputs.skip_ui_build }}
+        SKIP_MIGRATIONS: ${{ inputs.skip_migrations }}
+        CI: 'true'
       run: |
-        # Try to set secret
-        OUTPUT=$(echo "$ENCRYPTION_KEY" | wrangler secret put ENCRYPTION_KEY --name "$WORKER_NAME" 2>&1 || echo "")
+        set -euo pipefail
+
+        # Build CLI command arguments
+        CLI_ARGS=("deploy" "--ci" "--json")
         
-        if echo "$OUTPUT" | grep -qi "created"; then
-          echo "✓ Encryption key set as secret (new)"
-        elif echo "$OUTPUT" | grep -qi "updated"; then
-          echo "⚠️  Encryption key already exists, skipping (not overwritten)"
-        elif echo "$OUTPUT" | grep -qi "enter the secret value\|successfully"; then
-          echo "✓ Encryption key set as secret"
-        else
-          # Check if it's a real error or just informational
-          if echo "$OUTPUT" | grep -qi "error\|failed"; then
-            echo "::error::Failed to set encryption key: $OUTPUT"
-            exit 1
-          else
-            echo "✓ Encryption key set as secret (assuming success)"
-          fi
+        if [ -n "${WORKER_NAME:-}" ]; then
+          CLI_ARGS+=("--worker-name" "${WORKER_NAME}")
+        fi
+        
+        if [ -n "${CLOUDFLARE_TIER:-}" ]; then
+          CLI_ARGS+=("--tier" "${CLOUDFLARE_TIER}")
+        fi
+        
+        if [ -n "${DOMAIN:-}" ]; then
+          CLI_ARGS+=("--domain" "${DOMAIN}")
+        fi
+        
+        if [ "${SKIP_UI_BUILD:-false}" = "true" ]; then
+          CLI_ARGS+=("--skip-ui-build")
+        fi
+        
+        if [ "${SKIP_MIGRATIONS:-false}" = "true" ]; then
+          CLI_ARGS+=("--skip-migrations")
         fi
 
-    - name: Apply database migrations
-      if: inputs.skip_migrations != 'true'
-      shell: bash
-      working-directory: ${{ steps.workdir.outputs.path }}
-      env:
-        CLOUDFLARE_API_TOKEN: ${{ inputs.cloudflare_api_token }}
-        CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-      run: |
-        wrangler d1 migrations apply "${WORKER_NAME}-db" --remote || echo "Migrations may have already been applied"
+        # Run CLI and capture JSON output
+        echo "Running: npx --no-install package-broker-cloudflare ${CLI_ARGS[*]}"
+        JSON_OUTPUT=$(npx --no-install package-broker-cloudflare "${CLI_ARGS[@]}" 2>&1) || {
+          EXIT_CODE=$?
+          echo "::error::CLI deployment failed with exit code ${EXIT_CODE}"
+          echo "::error::CLI output: ${JSON_OUTPUT}"
+          exit ${EXIT_CODE}
+        }
 
-    - name: Deploy Worker
-      id: deploy
-      uses: cloudflare/wrangler-action@v3
-      with:
-        apiToken: ${{ inputs.cloudflare_api_token }}
-        accountId: ${{ inputs.cloudflare_account_id }}
-        workingDirectory: ${{ steps.workdir.outputs.path }}
+        # Extract JSON from output (may have GitHub annotations mixed in)
+        # The CLI outputs JSON on stdout when --json is used, but may also emit GitHub annotations
+        # Try to find the JSON object (starts with { and ends with })
+        JSON_ONLY=$(echo "$JSON_OUTPUT" | grep -oE '\{[^}]*"worker_url"[^}]*\}' | head -1 || echo "$JSON_OUTPUT" | grep -E '^\s*\{' | head -1 || echo "$JSON_OUTPUT" | tail -1)
+        
+        # Parse JSON and set outputs (jq is available in GitHub Actions runners)
+        WORKER_URL=$(echo "$JSON_ONLY" | jq -r '.worker_url // empty' 2>/dev/null || echo "")
+        DATABASE_ID=$(echo "$JSON_ONLY" | jq -r '.database_id // empty' 2>/dev/null || echo "")
+        KV_NAMESPACE_ID=$(echo "$JSON_ONLY" | jq -r '.kv_namespace_id // empty' 2>/dev/null || echo "")
+        
+        # Validate we got at least the worker URL
+        if [ -z "$WORKER_URL" ] && [ -z "$(echo "$JSON_ONLY" | jq -r '.error // empty' 2>/dev/null)" ]; then
+          echo "::warning::Could not parse JSON output from CLI. Raw output:"
+          echo "$JSON_OUTPUT"
+        fi
 
-    - name: Extract Worker URL
-      id: worker_url
-      shell: bash
-      env:
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-        ACCOUNT_SUBDOMAIN: ${{ steps.account_subdomain.outputs.subdomain }}
-      run: |
-        # Construct Worker URL
-        WORKER_URL="https://${WORKER_NAME}.${ACCOUNT_SUBDOMAIN}.workers.dev"
-        echo "url=${WORKER_URL}" >> $GITHUB_OUTPUT
-
-    - name: Set action outputs
-      id: outputs
-      shell: bash
-      env:
-        WORKER_URL: ${{ steps.worker_url.outputs.url }}
-        DATABASE_ID: ${{ steps.d1_db.outputs.database_id }}
-        KV_NAMESPACE_ID: ${{ steps.kv_namespace.outputs.namespace_id }}
-      run: |
-        echo "worker_url=${WORKER_URL}" >> $GITHUB_OUTPUT
-        echo "database_id=${DATABASE_ID}" >> $GITHUB_OUTPUT
-        echo "kv_namespace_id=${KV_NAMESPACE_ID}" >> $GITHUB_OUTPUT
+        if [ -n "$WORKER_URL" ]; then
+          echo "worker_url=${WORKER_URL}" >> $GITHUB_OUTPUT
+        fi
+        if [ -n "$DATABASE_ID" ]; then
+          echo "database_id=${DATABASE_ID}" >> $GITHUB_OUTPUT
+        fi
+        if [ -n "$KV_NAMESPACE_ID" ]; then
+          echo "kv_namespace_id=${KV_NAMESPACE_ID}" >> $GITHUB_OUTPUT
+        fi
 
     - name: Display deployment results
       shell: bash
       env:
-        WORKER_URL: ${{ steps.worker_url.outputs.url }}
+        WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
         DOMAIN: ${{ inputs.domain }}
-        WORKER_NAME: ${{ steps.worker_name.outputs.name }}
-        ACCOUNT_SUBDOMAIN: ${{ steps.account_subdomain.outputs.subdomain }}
-        SUBDOMAIN: ${{ steps.domain_info.outputs.subdomain }}
-        ZONE_NAME: ${{ steps.domain_info.outputs.zone_name }}
       run: |
-        echo "::notice::✅ Deployment complete!"
-        echo "::notice::🌐 Worker URL: ${WORKER_URL}"
-        
-        if [ -n "${DOMAIN:-}" ]; then
-          echo ""
-          echo "::notice::🌐 Custom Domain Configuration Required"
-          echo ""
-          echo "Your Worker is deployed at: ${WORKER_URL}"
-          echo ""
-          echo "To use your custom domain (${DOMAIN}), create a CNAME record in Cloudflare DNS:"
-          echo ""
-          echo "1. Go to: https://dash.cloudflare.com → Your Zone (${ZONE_NAME}) → DNS → Records"
-          echo "2. Click \"Add record\""
-          echo "3. Type: CNAME"
-          echo "4. Name: ${SUBDOMAIN}"
-          echo "5. Target: ${WORKER_NAME}.${ACCOUNT_SUBDOMAIN}.workers.dev"
-          echo "6. Proxy status: Proxied (orange cloud) or DNS only (grey cloud)"
-          echo "7. Click \"Save\""
-          echo ""
-          echo "After DNS propagation (usually a few minutes), your domain will work!"
+        if [ -n "${WORKER_URL:-}" ]; then
+          echo "::notice::✅ Deployment complete!"
+          echo "::notice::🌐 Worker URL: ${WORKER_URL}"
+          
+          if [ -n "${DOMAIN:-}" ]; then
+            echo ""
+            echo "::notice::🌐 Custom Domain Configuration Required"
+            echo "::notice::Create a CNAME record in Cloudflare DNS pointing ${DOMAIN} to ${WORKER_URL}"
+          fi
         fi
-        
-        echo ""
-        echo "::notice::Next steps:"
-        echo "1. Open your Worker URL in a browser: ${WORKER_URL}"
-        echo "2. Complete the initial setup (email + password)"
-        echo "3. Create an access token in the dashboard"
-        echo "4. Start adding repository sources"
