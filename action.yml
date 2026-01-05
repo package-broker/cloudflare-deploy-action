@@ -199,6 +199,14 @@ runs:
           exit ${EXIT_CODE}
         }
 
+        # Always show raw output for debugging (as a group to keep logs clean)
+        echo "::group::CLI Output"
+        echo "$JSON_OUTPUT"
+        echo "::endgroup::"
+        
+        # Re-emit any GitHub annotations from CLI output so they appear in the Actions summary
+        echo "$JSON_OUTPUT" | grep -E "^::(notice|warning|error)::" || true
+
         # Extract JSON from output (may have GitHub annotations mixed in)
         # The CLI outputs JSON on stdout when --json is used, but may also emit GitHub annotations
         # Try to find the JSON object (starts with { and ends with })
