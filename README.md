@@ -1,3 +1,6 @@
+> [!WARNING]
+> PACKAGE.broker 1.x is end of life and receives no fixes, including security fixes. This repository is kept read-only for reference. Package Broker 2.0 lives in [package-broker/broker](https://github.com/package-broker/broker); start at [package.broker](https://package.broker). The `@package-broker/*` 0.x packages on npm belong to 1.x.
+
 <div align="center">
   <img src="https://raw.githubusercontent.com/package-broker/docs/main/static/img/logo.svg" alt="PACKAGE.broker Logo" width="120" height="120">
   
